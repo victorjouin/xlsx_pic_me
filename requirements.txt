@@ -1,0 +1,10 @@
+openpyxl>=3.1
+pymupdf>=1.24
+
+# LibreOffice n'est PAS installable par pip et reste indispensable : c'est lui
+# qui convertit le classeur en PDF.
+#   Debian/Ubuntu : apt-get install -y libreoffice-calc fonts-liberation fonts-crosextra-carlito
+#   macOS         : brew install --cask libreoffice
+#   Windows       : winget install TheDocumentFoundation.LibreOffice
+# Le binaire est cherché dans le PATH puis aux emplacements usuels ; sinon,
+# renseigner la variable d'environnement SOFFICE_PATH.

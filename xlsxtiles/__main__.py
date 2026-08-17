@@ -1,56 +1,68 @@
 """
-Ligne de commande de xlsxtiles.
+Ligne de commande.
 
-    python -m xlsxtiles render <fichier.xlsx> <outdir> [--dpi N] [--patch-budget N]
-    python -m xlsxtiles profile <fichier.xlsx>
-    python -m xlsxtiles calibrate [--refresh]
+    python -m xlsxtiles render <fichier.xlsx> [-o manifest.json] [--dpi 150]
+    python -m xlsxtiles plan   <fichier.xlsx>
+    python -m xlsxtiles extract <manifest.json> <outdir>
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
-from .calibration import load_calibration
-from .config import DEFAULT_PATCH_BUDGET, RENDER_DPI
-from .manifest import render_workbook
-from .profiler import profile_workbook
+from .profile import profile_workbook
+from .tiles import DPI, plan_tiles, render_workbook
 
 
 def _cmd_render(args: argparse.Namespace) -> int:
-    m = render_workbook(args.source, args.outdir, dpi=args.dpi,
-                        patch_budget=args.patch_budget,
-                        include_base64=args.base64)
+    m = render_workbook(args.source, dpi=args.dpi)
+    payload = json.dumps(m, ensure_ascii=False, indent=2)
+
     for sh in m["sheets"]:
-        print(f"{sh['sheet']}: {sh['n_tiles']} tuile(s) "
-              f"[{sh['image_indexing']} / {sh['tiling_strategy']}]")
+        print(f"{sh['sheet']} ({sh['range_a1']}) : {sh['n_tiles']} tuile(s)",
+              file=sys.stderr)
         for t in sh["tiles"]:
-            flag = "" if t["grid_verified"] else "  NON VÉRIFIÉE"
             print(f"  {t['range_a1']:>16}  {t['width_px']}x{t['height_px']}px  "
-                  f"dérive={t['grid_drift_px']}  {t['png']}{flag}")
-    for w in m["warnings"]:
-        print(f"  ! {w}")
-    mf = Path(args.outdir) / "manifest.json"
-    size = mf.stat().st_size / 1e6
-    print(f"\nmanifeste : {mf} ({size:.1f} Mo"
-          f"{', images incluses en base64' if args.base64 else ''})")
+                  f"{len(t['png_base64']) / 1024:.0f} Ko base64", file=sys.stderr)
+
+    if args.output:
+        Path(args.output).write_text(payload, encoding="utf-8")
+        mb = len(payload.encode()) / 1e6
+        print(f"\n{args.output} ({mb:.1f} Mo)", file=sys.stderr)
+    else:
+        print(payload)
     return 0
 
 
-def _cmd_profile(args: argparse.Namespace) -> int:
-    print(profile_workbook(args.source).to_json())
+def _cmd_plan(args: argparse.Namespace) -> int:
+    """Plan de découpe sans rendu — utile pour vérifier un cadrage sans payer
+    les conversions LibreOffice."""
+    for sheet in profile_workbook(args.source):
+        tiles = plan_tiles(sheet)
+        print(f"{sheet.name} ({sheet.range_a1}) : {len(tiles)} tuile(s), "
+              f"en-tête {sheet.header_rows} ligne(s), "
+              f"{len(sheet.anchors)} zone(s) incoupable(s)")
+        for t in tiles:
+            print(f"  {t.range_a1}")
     return 0
 
 
-def _cmd_calibrate(args: argparse.Namespace) -> int:
-    cal = load_calibration(refresh=args.refresh)
-    print(json.dumps(asdict(cal), indent=2))
-    if not cal.calibrated:
-        print("calibration NON aboutie", file=sys.stderr)
-        return 1
+def _cmd_extract(args: argparse.Namespace) -> int:
+    """Réécrit les PNG sur disque depuis un manifeste — pour inspecter à l'œil."""
+    m = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for sh in m["sheets"]:
+        for t in sh["tiles"]:
+            name = f"{sh['sheet']}_{t['index']:03d}.png".replace("/", "_")
+            (outdir / name).write_bytes(base64.b64decode(t["png_base64"]))
+            n += 1
+    print(f"{n} image(s) écrite(s) dans {outdir}")
     return 0
 
 
@@ -59,25 +71,20 @@ def main(argv: list[str] | None = None) -> int:
                                 description="Découpe un classeur Excel en images.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pr = sub.add_parser("render", help="découpe un classeur en PNG + manifest.json")
+    pr = sub.add_parser("render", help="découpe et produit le manifeste JSON")
     pr.add_argument("source")
-    pr.add_argument("outdir")
-    pr.add_argument("--dpi", type=int, default=RENDER_DPI)
-    pr.add_argument("--patch-budget", type=int, default=DEFAULT_PATCH_BUDGET)
-    pr.add_argument("--base64", action="store_true",
-                    help="embarque chaque PNG dans le manifeste (champ "
-                         "png_base64) ; le manifeste pèse alors ~4/3 du "
-                         "poids total des images")
+    pr.add_argument("-o", "--output", help="fichier de sortie (stdout par défaut)")
+    pr.add_argument("--dpi", type=int, default=DPI)
     pr.set_defaults(func=_cmd_render)
 
-    pp = sub.add_parser("profile", help="affiche le profil JSON du classeur")
+    pp = sub.add_parser("plan", help="affiche le plan de découpe, sans rendu")
     pp.add_argument("source")
-    pp.set_defaults(func=_cmd_profile)
+    pp.set_defaults(func=_cmd_plan)
 
-    pc = sub.add_parser("calibrate", help="mesure (ou relit) la calibration pixel")
-    pc.add_argument("--refresh", action="store_true",
-                    help="ignore le cache et relance la feuille sonde")
-    pc.set_defaults(func=_cmd_calibrate)
+    pe = sub.add_parser("extract", help="réécrit les PNG d'un manifeste sur disque")
+    pe.add_argument("manifest")
+    pe.add_argument("outdir")
+    pe.set_defaults(func=_cmd_extract)
 
     args = p.parse_args(argv)
     return args.func(args)

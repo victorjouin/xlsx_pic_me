@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Sorties de rendu : un manifeste avec images en base64 pèse ~4/3 du poids
+# total des PNG (17 Mo pour le classeur de test). Rien de tout ça n'a sa place
+# dans l'historique git.
+manifest.json
+*.manifest.json
+out/
